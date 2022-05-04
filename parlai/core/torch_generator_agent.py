@@ -44,6 +44,8 @@ from parlai.utils.torch import (
     PipelineHelper,
 )
 
+import os
+
 
 class SearchBlocklist(object):
     """
@@ -941,6 +943,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
     def _treesearch_factory(self, device, verbose=False):
         method = self.opt.get('inference', 'greedy')
         beam_size = self.opt.get('beam_size', 1)
+        force_questions = True if hasattr(self, "force_questions") and self.force_questions else False
         if method == 'greedy':
             return GreedySearch(
                 beam_size,
@@ -953,6 +956,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
                 eos_token=self.END_IDX,
                 device=device,
                 verbose=verbose,
+                force_questions=force_questions,
             )
         elif method == 'beam':
             return BeamSearch(
@@ -966,6 +970,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
                 eos_token=self.END_IDX,
                 device=device,
                 verbose=verbose,
+                force_questions=force_questions,
             )
         elif method == 'delayedbeam':
             return DelayedBeamSearch(
@@ -981,6 +986,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
                 eos_token=self.END_IDX,
                 device=device,
                 verbose=verbose,
+                force_questions=force_questions,
             )
         elif method == 'topk':
             return TopKSampling(
@@ -995,6 +1001,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
                 eos_token=self.END_IDX,
                 device=device,
                 verbose=verbose,
+                force_questions=force_questions,
             )
         elif method == 'nucleus':
             return NucleusSampling(
@@ -1009,6 +1016,7 @@ class TorchGeneratorAgent(TorchAgent, ABC):
                 eos_token=self.END_IDX,
                 device=device,
                 verbose=verbose,
+                force_questions=force_questions,
             )
         else:
             raise ValueError(f"Can't use inference method {method}")
@@ -1301,6 +1309,7 @@ class TreeSearch(object):
         device='cpu',
         length_penalty=0.65,
         verbose=False,
+        force_questions=False,
     ):
         """
         Instantiate Beam object.
@@ -1358,6 +1367,9 @@ class TreeSearch(object):
         self.eos_top_ts = None
         self.n_best_counter = 0
         self.partial_hyps = [[self.bos] for i in range(beam_size)]
+
+        self.question_token = 20
+        self.force_questions = force_questions
 
     def set_context(self: TSType, context: torch.LongTensor) -> TSType:
         """
@@ -1491,6 +1503,17 @@ class TreeSearch(object):
 
         logprobs = self._block_block_list(logprobs)
 
+        # block non-questions /Alex
+        if self.force_questions:
+            for hyp_id, token in enumerate(self.outputs[-1]):
+                if token != self.question_token:
+                    logprobs[hyp_id][self.eos] = neginf(logprobs.dtype)
+                else:
+                    # Make EOS likely
+                    pass
+                    #logprobs[hyp_id][self.eos] = 1 
+
+
         if self.context_block_ngram > 0:
             if self.context is None:
                 raise ValueError(
@@ -1500,7 +1523,12 @@ class TreeSearch(object):
                 self.context_block_ngram, logprobs, self.context
             )
 
+
         path_selection = self.select_paths(logprobs, self.scores, current_length)
+        # Validate paths after changing function. Uncomment to run during dev /Alex
+        if self.force_questions:
+            assert self.validate_questions_paths(path_selection)
+
         self.scores = path_selection.scores
         # use clone() here to ensure that self.all_scores will not be changed
         # later due to any penalties to self.scores
@@ -1543,6 +1571,21 @@ class TreeSearch(object):
             self.eos_top = True
             if self.eos_top_ts is None:
                 self.eos_top_ts = len(self.outputs) - 1
+
+    def validate_questions_paths(self, path_selection):
+        """ Checks that the path_selection hasn't chosen an EOS-token without it following a question token.
+            USed to validate that forcing questions worked
+        """
+        if not self.force_questions:
+            return True
+
+        mask = path_selection.token_ids == self.eos
+        eos_hypotheses = path_selection.hypothesis_ids[mask]
+        previous_tokens_finished_beam = self.outputs[-1][eos_hypotheses]
+        ok_tokens = torch.Tensor([self.eos, self.question_token])
+        tests = torch.isin(previous_tokens_finished_beam, ok_tokens)
+        return all(tests)
+
 
     def is_done(self):
         """
