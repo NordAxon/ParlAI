@@ -943,7 +943,9 @@ class TorchGeneratorAgent(TorchAgent, ABC):
     def _treesearch_factory(self, device, verbose=False):
         method = self.opt.get('inference', 'greedy')
         beam_size = self.opt.get('beam_size', 1)
-        force_questions = True if hasattr(self, "force_questions") and self.force_questions else False
+        force_questions = (
+            True if hasattr(self, "force_questions") and self.force_questions else False
+        )
         if method == 'greedy':
             return GreedySearch(
                 beam_size,
@@ -1509,10 +1511,9 @@ class TreeSearch(object):
                 if token != self.question_token:
                     logprobs[hyp_id][self.eos] = neginf(logprobs.dtype)
                 else:
-                    # Make EOS likely
-                    pass
-                    #logprobs[hyp_id][self.eos] = 1 
-
+                    # Make EOS likely after question mark
+                    if current_length > self.min_length:
+                        logprobs[hyp_id][self.eos] = 1
 
         if self.context_block_ngram > 0:
             if self.context is None:
@@ -1522,7 +1523,6 @@ class TreeSearch(object):
             logprobs = self._block_ngrams(
                 self.context_block_ngram, logprobs, self.context
             )
-
 
         path_selection = self.select_paths(logprobs, self.scores, current_length)
         # Validate paths after changing function. Uncomment to run during dev /Alex
@@ -1585,7 +1585,6 @@ class TreeSearch(object):
         ok_tokens = torch.Tensor([self.eos, self.question_token])
         tests = torch.isin(previous_tokens_finished_beam, ok_tokens)
         return all(tests)
-
 
     def is_done(self):
         """
