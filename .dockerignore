@@ -1,0 +1,7 @@
+data/
+projects/
+tests/
+docs/
+parlai/zoo/
+parlai/tasks/*/*
+parlai/crowdsourcing/
