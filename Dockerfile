@@ -1,6 +1,6 @@
 FROM python:3.9-slim as BUILDER
 
-# Craete venv and activate it
+# Create venv and activate it
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
@@ -9,6 +9,7 @@ RUN pip install --upgrade pip
 RUN pip install torch==1.11.0 --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY . ./app/ParlAI
+RUN python app/ParlAI/edit_file.py
 RUN python /app/ParlAI/create_production_reqs.py
 RUN pip install app/ParlAI/.
 
