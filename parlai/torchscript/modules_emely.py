@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from typing import List, Dict, Optional, Tuple
+import os
 
 import torch.jit
 from torch import nn as nn
@@ -77,17 +78,17 @@ class TorchScriptedEmelyAgent(nn.Module):
         self.start_idx = agent.model.START_IDX
         self.end_idx = agent.model.END_IDX
         self.null_idx = agent.model.NULL_IDX
-        self.initial_decoder_input = [self.start_idx]#[self.end_idx, self.start_idx]
+        self.initial_decoder_input = [self.start_idx]  # [self.end_idx, self.start_idx]
 
-        self.inference = agent.opt.get("inference","greedy")
+        self.inference = agent.opt.get("inference", "greedy")
         self.temperature: float = agent.temperature
-        self.beam_size: int = agent.opt.get("beam_size",1)
+        self.beam_size: int = agent.opt.get("beam_size", 1)
         self.block_ngram = agent.beam_block_ngram
         self.context_block_ngram = agent.beam_context_block_ngram
         self.padding_token = agent.NULL_IDX
         self.bos_token = agent.START_IDX
         self.eos_token = agent.END_IDX
-        if self.inference=="greedy":
+        if self.inference == "greedy":
             self.min_length = 0
         else:
             self.min_length = agent.beam_min_length
@@ -101,7 +102,9 @@ class TorchScriptedEmelyAgent(nn.Module):
         wrapped_model = ModelIncrStateFlattener(agent.model)
 
         # Create sample inputs for tracing
-        sample_tokens = torch.tensor([[1, 2, 3, 4, 5] for _ in range(self.beam_size)], dtype=torch.long)
+        sample_tokens = torch.tensor(
+            [[1, 2, 3, 4, 5] for _ in range(self.beam_size)], dtype=torch.long
+        )
         encoder_states = agent.model.encoder(sample_tokens)
         initial_decoder_input = self._get_initial_decoder_input(self.beam_size)
         score, initial_incr_state = wrapped_decoder(
@@ -149,8 +152,9 @@ class TorchScriptedEmelyAgent(nn.Module):
         Tuples of Tensors can be traced" error.
         """
         return (
-            torch.tensor(self.initial_decoder_input, dtype=torch.long)
-            .expand(beam_size,1)
+            torch.tensor(self.initial_decoder_input, dtype=torch.long).expand(
+                beam_size, 1
+            )
             # torch.tensor(self.initial_decoder_input, dtype=torch.long)
             # .expand(1, len(self.initial_decoder_input))
         )
@@ -212,23 +216,26 @@ class TorchScriptedEmelyAgent(nn.Module):
         # )
 
         # Pass through the encoder and decoder to generate tokens
-        batch_text_vec = torch.unsqueeze(flattened_text_vec, dim=0).repeat(self.beam_size,1)  # Add batch dim
+        batch_text_vec = torch.unsqueeze(flattened_text_vec, dim=0).repeat(
+            self.beam_size, 1
+        )  # Add batch dim
         encoder_states = self.encoder(batch_text_vec)
         decoder_input = self._get_initial_decoder_input(self.beam_size)
         # keep track of early stopping if all generations finish
 
-        beam = ScriptableTreeSearch(self.beam_size,
-                                    self.inference,
-                                    block_ngram = self.block_ngram,
-                                    context_block_ngram = self.context_block_ngram,
-                                    padding_token = self.padding_token,
-                                    bos_token = self.bos_token,
-                                    eos_token = self.eos_token,
-                                    min_length = self.min_length,
-                                    length_penalty = self.length_penalty,
-                                    )
+        beam = ScriptableTreeSearch(
+            self.beam_size,
+            self.inference,
+            block_ngram=self.block_ngram,
+            context_block_ngram=self.context_block_ngram,
+            padding_token=self.padding_token,
+            bos_token=self.bos_token,
+            eos_token=self.eos_token,
+            min_length=self.min_length,
+            length_penalty=self.length_penalty,
+        )
         beam.set_context(flattened_text_vec)
-        
+
         incr_state: Dict[str, torch.Tensor] = {}
         for token_idx in range(max_len):
             if beam.is_done():
@@ -247,13 +254,13 @@ class TorchScriptedEmelyAgent(nn.Module):
             score = score.view(1, self.beam_size, -1)
             if self.temperature != 1.0:
                 score.div_(self.temperature)
-            #_, preds = score.max(dim=2)    # Previous
+            # _, preds = score.max(dim=2)    # Previous
             score = F.log_softmax(score, dim=-1, dtype=torch.float32)
             if not beam.is_done():
                 beam.advance(score[0])
             incr_state_inds = beam.get_backtrack_from_current_step()
             incr_state = self.partially_traced_model.reorder_decoder_incremental_state(
-                incr_state,incr_state_inds
+                incr_state, incr_state_inds
             )
             selection = beam.get_output_from_current_step().unsqueeze(-1)
             decoder_input = self._get_next_decoder_input(
@@ -288,83 +295,6 @@ class TorchScriptedEmelyAgent(nn.Module):
         prev_input = torch.index_select(prev_input, 0, incr_state_inds)
         decoder_input = torch.cat([prev_input, selection], dim=-1)
         return decoder_input
-
-    # """Original forward function"""
-    # def forward(self, context: str, max_len: int = 128) -> str:
-
-    #     # Vectorize all lines of context
-    #     history_vecs: List[List[int]] = []
-    #     context_lines = context.split('\n')
-    #     if self.history_size > 0:
-    #         context_lines = context_lines[-self.history_size :]
-    #     for line in context_lines:
-    #         history_vecs.append(self.parse(line))
-
-    #     # Get full history vec
-    #     text_vecs: List[List[int]] = []
-    #     for vec in history_vecs[:-1]:
-    #         text_vecs += [vec]
-    #         text_vecs += [self.delimiter_tok]
-    #     text_vecs += [history_vecs[-1]]
-    #     if self.global_end_token is not None:
-    #         text_vecs += [[self.global_end_token]]
-
-    #     # Flatten text_vecs
-    #     flattened_text_vec: List[int] = []
-    #     for vec in text_vecs:
-    #         for token in vec:
-    #             flattened_text_vec.append(token)
-
-    #     # Format history vec given various logic
-    #     if self.text_truncate is not None:
-    #         truncate_length = self.text_truncate - 2
-    #         if len(flattened_text_vec) > truncate_length:
-    #             flattened_text_vec = flattened_text_vec[-truncate_length:]
-    #     flattened_text_vec = torch.tensor(flattened_text_vec, dtype=torch.long)
-    #     # originally "if is_bart: Seems to be excluded in Emely"
-    #     # flattened_text_vec = torch.cat(
-    #     #     [
-    #     #         torch.tensor([self.start_idx], dtype=torch.long),
-    #     #         flattened_text_vec,
-    #     #         torch.tensor([self.end_idx], dtype=torch.long),
-    #     #     ],
-    #     #     dim=0,
-    #     # )
-
-    #     # Pass through the encoder and decoder to generate tokens
-    #     batch_text_vec = torch.unsqueeze(flattened_text_vec, dim=0)  # Add batch dim
-    #     encoder_states = self.encoder(batch_text_vec)
-    #     generations = self._get_initial_decoder_input(batch_text_vec)
-    #     # keep track of early stopping if all generations finish
-    #     seen_end = torch.zeros(
-    #         batch_text_vec.size(0), device=batch_text_vec.device, dtype=torch.bool
-    #     )
-    #     incr_state: Dict[str, torch.Tensor] = {}
-    #     for token_idx in range(max_len):
-    #         if token_idx == 0:
-    #             latent, incr_state = self.decoder_first_pass(
-    #                 generations, encoder_states
-    #             )
-    #         else:
-    #             latent, incr_state = self.decoder_later_pass(
-    #                 generations, encoder_states, incr_state
-    #             )
-    #         logits = self.partially_traced_model.output(latent[:, -1:, :])
-    #         _, preds = logits.max(dim=2)
-    #         incr_state = self.partially_traced_model.reorder_decoder_incremental_state(
-    #             incr_state,
-    #             torch.tensor([0], dtype=torch.long, device=batch_text_vec.device),
-    #         )
-    #         seen_end = seen_end + (preds == self.end_idx).squeeze(1)
-    #         generations = torch.cat([generations, preds], dim=1)
-    #         if torch.all(seen_end):
-    #             break
-
-    #     # Get the label from the generated tokens and update the history
-    #     generation_tokens: List[int] = generations[0].tolist()
-    #     label = self._v2t(generation_tokens)
-
-    #     return label
 
 
 class BaseIncrStateFlattener(nn.Module):
@@ -469,6 +399,7 @@ class ModelIncrStateFlattener(BaseIncrStateFlattener):
     def output(self, tensor: torch.Tensor) -> torch.Tensor:
         return self.module.output(tensor)
 
+
 @torch.jit.script
 class ScriptableSubwordBpeHelper(object):
     """
@@ -488,12 +419,11 @@ class ScriptableSubwordBpeHelper(object):
             num_passes += 1
             if not text[idx].isspace():
                 last_matching_idx = idx
-                if text[idx].isalpha() or text[idx]=='_' or text[idx].isnumeric():
-                    while (
-                        last_matching_idx + 1 < len(text)
-                        and (text[last_matching_idx + 1].isalpha()
-                        or text[last_matching_idx + 1]=='_' 
-                        or text[last_matching_idx + 1].isnumeric())
+                if text[idx].isalpha() or text[idx] == '_' or text[idx].isnumeric():
+                    while last_matching_idx + 1 < len(text) and (
+                        text[last_matching_idx + 1].isalpha()
+                        or text[last_matching_idx + 1] == '_'
+                        or text[last_matching_idx + 1].isnumeric()
                     ):
                         last_matching_idx += 1
                 else:
@@ -504,7 +434,7 @@ class ScriptableSubwordBpeHelper(object):
                         and not text[last_matching_idx + 1].isnumeric()
                     ):
                         last_matching_idx += 1
-                tokens.append(text[idx:last_matching_idx + 1])
+                tokens.append(text[idx : last_matching_idx + 1])
                 idx = last_matching_idx + 1
             else:
                 idx = idx + 1
@@ -539,7 +469,6 @@ class ScriptableSubwordBpeHelper(object):
             text = f' {text}'
         return self.helper_encode(text)
 
-
     def helper_encode(self, text: str) -> List[str]:
         """
         Tokenize text.
@@ -551,9 +480,8 @@ class ScriptableSubwordBpeHelper(object):
             A list of tokens
         """
         text = text.replace('\n', ' __newln__ ')
-        #return self.findall(text)
         return self.segment_tokens(self.findall(text))
-    
+
     def segment_tokens(self, tokens: List[str]) -> List[str]:
         """segment a sequence of tokens with BPE encoding"""
         output: List[str] = []
@@ -568,7 +496,7 @@ class ScriptableSubwordBpeHelper(object):
             output.append(new_word[-1])
 
         return output
-    
+
     def encode_token(self, orig: str) -> List[str]:
         """Encode word based on list of BPE merge operations, which are applied consecutively"""
         """Only implemented for version (0,2) in codec file"""
@@ -584,36 +512,36 @@ class ScriptableSubwordBpeHelper(object):
             ranks: List[int] = []
             codes: List[str] = []
             idxs: List[int] = []
-            
-            for (i,pair) in enumerate(zip(word, word[1:])):
+
+            for (i, pair) in enumerate(zip(word, word[1:])):
                 if self.temp_separator.join(pair) in self.bpe_codes:
                     ranks.append(self.bpe_codes[self.temp_separator.join(pair)])
                     codes.append(self.temp_separator.join(pair))
                     idxs.append(i)
-            if len(ranks)==0:
+            if len(ranks) == 0:
                 break
 
-            #get first merge operation in list of BPE codes
+            # get first merge operation in list of BPE codes
             min_rank_idx: int = ranks.index(min(ranks))
             bigram: str = codes[min_rank_idx]
-            
+
             # find start position of all pairs that we want to merge
             positions: List[int] = []
-            for i in range(0,len(ranks)):
-                if codes[i]==bigram:
+            for i in range(0, len(ranks)):
+                if codes[i] == bigram:
                     positions.append(idxs[i])
 
             i = 0
             new_word: List[str] = []
-            bigram = bigram.replace('__space__','')
+            bigram = bigram.replace('__space__', '')
             for j in positions:
                 # merges are invalid if they start before current position. This can happen if there are overlapping pairs: (x x x -> xx x)
                 if j < i:
                     continue
-                new_word.extend(word[i:j]) # all symbols before merged pair
-                new_word.append(bigram) # merged pair
-                i = j+2 # continue after merged pair
-            new_word.extend(word[i:]) # add all symbols until end of word
+                new_word.extend(word[i:j])  # all symbols before merged pair
+                new_word.append(bigram)  # merged pair
+                i = j + 2  # continue after merged pair
+            new_word.extend(word[i:])  # add all symbols until end of word
             word = new_word
 
         # don't print end-of-word symbols
@@ -701,7 +629,7 @@ class ScriptableDictionaryAgent:
             add_prefix_space=bpe_add_prefix_space,
             bpe_codes=bpe_codes,
             separator=separator,
-            temp_separator=temp_separator
+            temp_separator=temp_separator,
         )
 
     def _word_lookup(self, key: str) -> int:
@@ -763,6 +691,7 @@ class ScriptableDictionaryAgent:
         text = self.bpe.decode(tokens)
         return text
 
+
 @torch.jit.script
 class _ScriptableHypothesisTail(object):
     """
@@ -778,6 +707,7 @@ class _ScriptableHypothesisTail(object):
         self.score = score
         self.tokenid = tokenid
 
+
 @torch.jit.script
 def scriptedNeginf(dtype: torch.dtype) -> float:
     """
@@ -786,7 +716,8 @@ def scriptedNeginf(dtype: torch.dtype) -> float:
     if dtype is torch.float16:
         return -65504.0
     else:
-        return -10.0**20
+        return -(10.0 ** 20)
+
 
 @torch.jit.script
 class ScriptableTreeSearch(object):
@@ -839,7 +770,7 @@ class ScriptableTreeSearch(object):
         self.bos = bos_token
         self.pad = padding_token
         self.context_block_ngram = context_block_ngram
-        #self.block_list: Optional[SearchBlocklist] = None # Not currently supported by this implementation
+        # self.block_list: Optional[SearchBlocklist] = None # Not currently supported by this implementation
         # recent score for each hypo in the beam
         self.scores: Optional[torch.Tensor] = torch.zeros(1)
         # self.scores values per each time step
@@ -847,9 +778,7 @@ class ScriptableTreeSearch(object):
         # backtracking id to hypothesis at previous time step
         self.bookkeep = []
         # output tokens at each time step
-        self.outputs = [
-            torch.tensor([self.beam_size]).long().fill_(self.bos)
-        ]
+        self.outputs = [torch.tensor([self.beam_size]).long().fill_(self.bos)]
         # keeps tuples (score, time_step, hyp_id)
         self.finished: List[_ScriptableHypothesisTail] = []
         self.eos_top = False
@@ -858,6 +787,9 @@ class ScriptableTreeSearch(object):
         self.partial_hyps: List[List[int]] = [[self.bos] for i in range(beam_size)]
 
         self.context: List[int] = []
+
+        self.question_token = 20
+        self.force_questions = int(os.getenv("FORCE_QUESTIONS", "0"))
 
     def set_context(self, context: torch.LongTensor):
         """
@@ -885,7 +817,9 @@ class ScriptableTreeSearch(object):
         """
         return self.bookkeep[-1]
 
-    def select_paths(self, logprobs: torch.Tensor, prior_scores: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def select_paths(
+        self, logprobs: torch.Tensor, prior_scores: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Select the next vocabulary item in these beams.
 
@@ -916,7 +850,9 @@ class ScriptableTreeSearch(object):
             # beam search actually looks over all hypotheses together so we flatten
             beam_scores = logprobs + prior_scores.unsqueeze(1).expand_as(logprobs)
             flat_beam_scores = beam_scores.view(-1)
-            best_scores, best_idxs = torch.topk(flat_beam_scores, self.beam_size, dim=-1)
+            best_scores, best_idxs = torch.topk(
+                flat_beam_scores, self.beam_size, dim=-1
+            )
             voc_size = logprobs.size(-1)
 
             # get the backtracking hypothesis id as a multiple of full voc_sizes
@@ -934,7 +870,8 @@ class ScriptableTreeSearch(object):
         return (hyp_ids, tok_ids, best_scores)
 
     def _block_ngrams(
-        self, ngram_size: int, logprobs: torch.Tensor, source: Optional[List[int]]) -> torch.Tensor:
+        self, ngram_size: int, logprobs: torch.Tensor, source: Optional[List[int]]
+    ) -> torch.Tensor:
         """
         Hard block ngrams from the logprobs, based on the source.
 
@@ -951,7 +888,10 @@ class ScriptableTreeSearch(object):
             if len(hyp) < ngram_size - 1:
                 continue
             source_ = hyp if source is None else source
-            ngrams = [source_[i:i+ngram_size] for i in range(len(source_)-ngram_size+1)]
+            ngrams = [
+                source_[i : i + ngram_size]
+                for i in range(len(source_) - ngram_size + 1)
+            ]
             prefix = hyp[-(ngram_size - 1) :]
             for ngram in ngrams:
                 if ngram_size == 1 or prefix == ngram[:-1]:
@@ -992,7 +932,17 @@ class ScriptableTreeSearch(object):
         if self.block_ngram > 0:
             logprobs = self._block_ngrams(self.block_ngram, logprobs, None)
 
-        #logprobs = self._block_block_list(logprobs)
+        # logprobs = self._block_block_list(logprobs)
+
+        # Force questions
+        if self.force_questions:
+            for hyp_id, token in enumerate(self.outputs[-1]):
+                if token != self.question_token:
+                    logprobs[hyp_id][self.eos] = scriptedNeginf(logprobs.dtype)
+                else:
+                    # Make EOS likely after question mark
+                    if current_length > self.min_length:
+                        logprobs[hyp_id][self.eos] = 1
 
         if self.context_block_ngram > 0:
             if self.context is None:
@@ -1003,9 +953,7 @@ class ScriptableTreeSearch(object):
                 self.context_block_ngram, logprobs, self.context
             )
 
-        hyp_ids, tok_ids, self.scores = self.select_paths(
-            logprobs, self.scores
-        )
+        hyp_ids, tok_ids, self.scores = self.select_paths(logprobs, self.scores)
         # use clone() here to ensure that self.all_scores will not be changed
         # later due to any penalties to self.scores
         self.all_scores.append(self.scores.clone())
@@ -1039,7 +987,7 @@ class ScriptableTreeSearch(object):
 
         if self.outputs[-1][0] == self.eos:
             self.eos_top = True
-            if self.eos_top_ts==-1:
+            if self.eos_top_ts == -1:
                 self.eos_top_ts = len(self.outputs) - 1
 
     def is_done(self) -> bool:
@@ -1054,7 +1002,9 @@ class ScriptableTreeSearch(object):
     #     """
     #     return list(zip(*[input_list[i:] for i in range(n)]))
 
-    def _get_hyp_from_finished(self, hypothesis_tail: _ScriptableHypothesisTail) -> List[_ScriptableHypothesisTail]:
+    def _get_hyp_from_finished(
+        self, hypothesis_tail: _ScriptableHypothesisTail
+    ) -> List[_ScriptableHypothesisTail]:
         hyp_idx: List[_ScriptableHypothesisTail] = []
         endback: int = hypothesis_tail.hypid
         for i in range(hypothesis_tail.timestep, -1, -1):
@@ -1070,13 +1020,15 @@ class ScriptableTreeSearch(object):
 
         return hyp_idx
 
-    def _get_pretty_hypothesis(self, list_of_hypotails: List[_ScriptableHypothesisTail]) -> torch.Tensor:
+    def _get_pretty_hypothesis(
+        self, list_of_hypotails: List[_ScriptableHypothesisTail]
+    ) -> torch.Tensor:
         """
         Return hypothesis as a tensor of token ids.
         """
         reslist: torch.Tensor = torch.zeros(len(list_of_hypotails))
         for i in range(len(list_of_hypotails)):
-            reslist[i] = list_of_hypotails[len(list_of_hypotails)-i-1].tokenid
+            reslist[i] = list_of_hypotails[len(list_of_hypotails) - i - 1].tokenid
         return reslist
 
     def get_rescored_finished(self) -> torch.Tensor:
@@ -1108,10 +1060,10 @@ class ScriptableTreeSearch(object):
 
         scores: torch.Tensor = torch.zeros(len(self.finished))
         rescored_finished: List[_ScriptableHypothesisTail] = []
-        for i,finished_item in enumerate(self.finished):
+        for i, finished_item in enumerate(self.finished):
             current_length = finished_item.timestep + 1
             # these weights are from Google NMT paper
-            length_penalty = ((1 + current_length) / 6)**self.length_penalty
+            length_penalty = ((1 + current_length) / 6) ** self.length_penalty
             rescored_finished.append(
                 _ScriptableHypothesisTail(
                     timestep=finished_item.timestep,
@@ -1121,9 +1073,11 @@ class ScriptableTreeSearch(object):
                 )
             )
             scores[i] = finished_item.score / length_penalty
-        
+
         maxscore_ind = torch.argmax(scores).item()
 
-        best: torch.Tensor = self._get_pretty_hypothesis(self._get_hyp_from_finished(rescored_finished[maxscore_ind]))
-        
+        best: torch.Tensor = self._get_pretty_hypothesis(
+            self._get_hyp_from_finished(rescored_finished[maxscore_ind])
+        )
+
         return best
