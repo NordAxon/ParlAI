@@ -31,3 +31,4 @@ scipy
 datasets
 protobuf
 fairscale
+torch

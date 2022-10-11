@@ -6,7 +6,7 @@ def main():
 
     cwd = Path(__file__).resolve().parent
 
-    with open(cwd / "uninstall.txt", "r") as f:
+    with open(cwd / "ignoreinstall.txt", "r") as f:
         text = f.read()
         uninstall = text.split("\n")
 
