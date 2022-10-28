@@ -17,7 +17,7 @@ from parlai.core.torch_agent import TorchAgent
 from parlai.utils.bpe import SubwordBPEHelper
 
 
-class TorchScriptedEmelyAgent(nn.Module):
+class TorchScriptedEmelyParlaiAgent(nn.Module):
     """
     A helper class for exporting Emely via TorchScript.
     """

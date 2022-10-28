@@ -1,5 +1,7 @@
 FROM python:3.9-slim as BUILDER
 
+ARG model_library
+
 # Create venv and activate it
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
@@ -9,16 +11,16 @@ RUN pip install --upgrade pip
 RUN pip install torch==1.11.0 --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY . ./app/ParlAI
-RUN python app/ParlAI/edit_file.py
-RUN python /app/ParlAI/create_production_reqs.py
-RUN pip install app/ParlAI/.
+RUN if [ "$model_library" = "parlai" ] ; then python app/ParlAI/edit_file.py; fi
+RUN if [ "$model_library" = "parlai" ] ; then python /app/ParlAI/create_production_reqs.py; fi
+RUN if [ "$model_library" = "parlai" ] ; then pip install app/ParlAI/.; fi
 
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
 # Cleanup
-RUN pip uninstall -r app/ParlAI/uninstall.txt -y
-RUN rm -rf root/.cache/pip/ && rm -rf /usr/local/lib/python3.9/site-packages/google && rm -rf /usr/local/lib/python3.9/site-packages/sphinxcontrib
+RUN if [ "$model_library" = "parlai" ] ; then pip uninstall -r app/ParlAI/uninstall.txt -y; fi
+RUN if [ "$model_library" = "parlai" ] ; then rm -rf root/.cache/pip/ && rm -rf /usr/local/lib/python3.9/site-packages/google && rm -rf /usr/local/lib/python3.9/site-packages/sphinxcontrib; fi
 
 FROM python:3.9-slim
 COPY --from=BUILDER /app /app

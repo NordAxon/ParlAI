@@ -15,7 +15,7 @@ from parlai.core.opt import Opt
 from parlai.core.params import ParlaiParser
 from parlai.core.script import ParlaiScript, register_script
 from parlai.utils.io import PathManager
-from src.emely.agent import EmelyAgent
+from src.emely.agent_parlai import EmelyParlaiAgent
 from parlai.utils.bpe import SubwordBPEHelper
 
 def export_model(opt: Opt):
@@ -97,7 +97,7 @@ def export_emely(opt: Opt, quantize: bool):
             'TorchScript export is only supported for Torch 1.7 and higher!'
         )
     else:
-        from parlai.torchscript.modules_emely import TorchScriptedEmelyAgent
+        from parlai.torchscript.modules_emely import TorchScriptedEmelyParlaiAgent
 
     overrides = {
         'no_cuda': True,  # TorchScripting is CPU only
@@ -110,7 +110,7 @@ def export_emely(opt: Opt, quantize: bool):
         opt['override'][k] = v
 
     # Create the unscripted greedy-search module
-    agent = EmelyAgent(opt)
+    agent = EmelyParlaiAgent(opt)
     if quantize:
         agent.model = torch.quantization.quantize_dynamic(agent.model, {torch.nn.Linear}, dtype=torch.qint8) 
     sbpe = SubwordBPEHelper(agent.opt)
@@ -120,10 +120,10 @@ def export_emely(opt: Opt, quantize: bool):
     sbpe.bpe_codes = joint_bpe_codes
     sbpe.separator = "@@"
     agent.dict.bpe = sbpe
-    original_module = TorchScriptedEmelyAgent(agent)
+    original_module = TorchScriptedEmelyParlaiAgent(agent)
 
     # Script the module and save
-    scripted_module = torch.jit.script(TorchScriptedEmelyAgent(agent))
+    scripted_module = torch.jit.script(TorchScriptedEmelyParlaiAgent(agent))
     with PathManager.open(opt['scripted_model_file'], 'wb') as f:
         torch.jit.save(scripted_module, f)
     
